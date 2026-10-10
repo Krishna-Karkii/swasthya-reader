@@ -66,6 +66,7 @@ def load_session_reports(
     user_id: UUID,
     session_id: UUID,
     limit: int = 20,
+    before: tuple[datetime, UUID] | None = None,
 ) -> list[Report]:
     if not 1 <= limit <= MAX_REPORT_PAGE_SIZE:
         raise ValueError(f"limit must be between 1 and {MAX_REPORT_PAGE_SIZE}")
@@ -74,7 +75,15 @@ def load_session_reports(
         select(Report)
         .join(ChatSession, Report.session_id == ChatSession.id)
         .where(ChatSession.id == session_id, ChatSession.user_id == user_id)
-        .order_by(Report.created_at.desc(), Report.id.desc())
-        .limit(limit)
     )
+    if before is not None:
+        before_created_at, before_id = before
+        statement = statement.where(
+            or_(
+                Report.created_at < before_created_at,
+                and_(Report.created_at == before_created_at, Report.id < before_id),
+            )
+        )
+
+    statement = statement.order_by(Report.created_at.desc(), Report.id.desc()).limit(limit)
     return list(database.scalars(statement).all())
