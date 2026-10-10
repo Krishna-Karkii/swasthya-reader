@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models import ChatMessage, ChatSession, Report
+from app.db.models import ChatMessage, ChatSession, LabResult, Report
 
 MAX_RECENT_MESSAGE_WINDOW = 20
 MAX_MESSAGE_PAGE_SIZE = 50
@@ -86,4 +86,26 @@ def load_session_reports(
         )
 
     statement = statement.order_by(Report.created_at.desc(), Report.id.desc()).limit(limit)
+    return list(database.scalars(statement).all())
+
+
+def load_report_results(
+    database: Session,
+    *,
+    user_id: UUID,
+    session_id: UUID,
+    report_id: UUID,
+) -> list[LabResult]:
+    statement = (
+        select(LabResult)
+        .join(Report, LabResult.report_id == Report.id)
+        .join(ChatSession, Report.session_id == ChatSession.id)
+        .where(
+            LabResult.report_id == report_id,
+            Report.session_id == session_id,
+            ChatSession.id == session_id,
+            ChatSession.user_id == user_id,
+        )
+        .order_by(LabResult.test_name_original, LabResult.id)
+    )
     return list(database.scalars(statement).all())
