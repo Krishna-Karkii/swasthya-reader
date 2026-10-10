@@ -287,12 +287,13 @@ def test_session_reports_are_newest_first_bounded_and_owner_scoped() -> None:
             other_session = ChatSession(id=other_session_id, user=other_user)
             chat_session.reports = [
                 Report(
+                    id=uuid.UUID(int=index + 1),
                     status="completed",
                     mime_type="image/png",
                     original_filename=f"synthetic-{index}.png",
-                    created_at=start_time + timedelta(minutes=index),
+                    created_at=start_time + timedelta(minutes=index // 2),
                 )
-                for index in range(3)
+                for index in range(4)
             ]
             other_session.reports = [
                 Report(
@@ -309,9 +310,21 @@ def test_session_reports_are_newest_first_bounded_and_owner_scoped() -> None:
                 database, user_id=owner_id, session_id=session_id, limit=2
             )
             assert [report.original_filename for report in reports] == [
+                "synthetic-3.png",
                 "synthetic-2.png",
-                "synthetic-1.png",
             ]
+            older_reports = load_session_reports(
+                database,
+                user_id=owner_id,
+                session_id=session_id,
+                limit=2,
+                before=(reports[-1].created_at, reports[-1].id),
+            )
+            assert [report.original_filename for report in older_reports] == [
+                "synthetic-1.png",
+                "synthetic-0.png",
+            ]
+            assert len({report.id for report in reports + older_reports}) == 4
             assert load_session_reports(
                 database, user_id=other_user_id, session_id=session_id
             ) == []
