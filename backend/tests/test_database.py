@@ -11,7 +11,7 @@ from app.db import models  # noqa: F401
 from app.db.base import Base
 from app.db.database import create_database_engine
 from app.db.models import ChatMessage, ChatSession, LabResult, Report, User
-from app.db.queries import load_message_page, load_recent_messages
+from app.db.queries import load_message_page, load_recent_messages, load_session_reports
 
 
 def test_database_persists_messages_and_cascades_user_deletion() -> None:
@@ -261,6 +261,71 @@ def test_message_pages_are_stable_and_owner_scoped() -> None:
                 )
 
             database.delete(owner)
+            database.commit()
+    finally:
+        engine.dispose()
+
+
+def test_session_reports_are_newest_first_bounded_and_owner_scoped() -> None:
+    database_url = os.environ.get("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("set TEST_DATABASE_URL to a disposable PostgreSQL test database")
+
+    engine = create_database_engine(database_url)
+    owner_id = uuid.uuid4()
+    other_user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    other_session_id = uuid.uuid4()
+    start_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    try:
+        Base.metadata.create_all(engine)
+        with Session(engine) as database:
+            owner = User(id=owner_id)
+            other_user = User(id=other_user_id)
+            chat_session = ChatSession(id=session_id, user=owner)
+            other_session = ChatSession(id=other_session_id, user=other_user)
+            chat_session.reports = [
+                Report(
+                    status="completed",
+                    mime_type="image/png",
+                    original_filename=f"synthetic-{index}.png",
+                    created_at=start_time + timedelta(minutes=index),
+                )
+                for index in range(3)
+            ]
+            other_session.reports = [
+                Report(
+                    status="completed",
+                    mime_type="image/png",
+                    original_filename="other-user.png",
+                    created_at=start_time + timedelta(minutes=10),
+                )
+            ]
+            database.add_all([owner, other_user])
+            database.commit()
+
+            reports = load_session_reports(
+                database, user_id=owner_id, session_id=session_id, limit=2
+            )
+            assert [report.original_filename for report in reports] == [
+                "synthetic-2.png",
+                "synthetic-1.png",
+            ]
+            assert load_session_reports(
+                database, user_id=other_user_id, session_id=session_id
+            ) == []
+            assert load_session_reports(
+                database, user_id=owner_id, session_id=other_session_id
+            ) == []
+
+            with pytest.raises(ValueError, match="limit must be between"):
+                load_session_reports(
+                    database, user_id=owner_id, session_id=session_id, limit=51
+                )
+
+            database.delete(owner)
+            database.delete(other_user)
             database.commit()
     finally:
         engine.dispose()
