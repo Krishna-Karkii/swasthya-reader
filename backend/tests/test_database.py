@@ -11,7 +11,12 @@ from app.db import models  # noqa: F401
 from app.db.base import Base
 from app.db.database import create_database_engine
 from app.db.models import ChatMessage, ChatSession, LabResult, Report, User
-from app.db.queries import load_message_page, load_recent_messages, load_session_reports
+from app.db.queries import (
+    load_message_page,
+    load_recent_messages,
+    load_report_results,
+    load_session_reports,
+)
 
 
 def test_database_persists_messages_and_cascades_user_deletion() -> None:
@@ -287,12 +292,13 @@ def test_session_reports_are_newest_first_bounded_and_owner_scoped() -> None:
             other_session = ChatSession(id=other_session_id, user=other_user)
             chat_session.reports = [
                 Report(
+                    id=uuid.UUID(int=index + 1),
                     status="completed",
                     mime_type="image/png",
                     original_filename=f"synthetic-{index}.png",
-                    created_at=start_time + timedelta(minutes=index),
+                    created_at=start_time + timedelta(minutes=index // 2),
                 )
-                for index in range(3)
+                for index in range(4)
             ]
             other_session.reports = [
                 Report(
@@ -309,9 +315,21 @@ def test_session_reports_are_newest_first_bounded_and_owner_scoped() -> None:
                 database, user_id=owner_id, session_id=session_id, limit=2
             )
             assert [report.original_filename for report in reports] == [
+                "synthetic-3.png",
                 "synthetic-2.png",
-                "synthetic-1.png",
             ]
+            older_reports = load_session_reports(
+                database,
+                user_id=owner_id,
+                session_id=session_id,
+                limit=2,
+                before=(reports[-1].created_at, reports[-1].id),
+            )
+            assert [report.original_filename for report in older_reports] == [
+                "synthetic-1.png",
+                "synthetic-0.png",
+            ]
+            assert len({report.id for report in reports + older_reports}) == 4
             assert load_session_reports(
                 database, user_id=other_user_id, session_id=session_id
             ) == []
@@ -323,6 +341,98 @@ def test_session_reports_are_newest_first_bounded_and_owner_scoped() -> None:
                 load_session_reports(
                     database, user_id=owner_id, session_id=session_id, limit=51
                 )
+
+            database.delete(owner)
+            database.delete(other_user)
+            database.commit()
+    finally:
+        engine.dispose()
+
+
+def test_report_results_require_matching_user_session_and_report() -> None:
+    database_url = os.environ.get("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("set TEST_DATABASE_URL to a disposable PostgreSQL test database")
+
+    engine = create_database_engine(database_url)
+    owner_id = uuid.uuid4()
+    other_user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    other_session_id = uuid.uuid4()
+    report_id = uuid.uuid4()
+    other_report_id = uuid.uuid4()
+
+    try:
+        Base.metadata.create_all(engine)
+        with Session(engine) as database:
+            owner = User(id=owner_id)
+            other_user = User(id=other_user_id)
+            chat_session = ChatSession(id=session_id, user=owner)
+            other_session = ChatSession(id=other_session_id, user=other_user)
+            report = Report(
+                id=report_id,
+                session=chat_session,
+                status="completed",
+                mime_type="image/png",
+            )
+            other_report = Report(
+                id=other_report_id,
+                session=other_session,
+                status="completed",
+                mime_type="image/png",
+            )
+            report.results = [
+                LabResult(
+                    test_name_original="White blood cell count",
+                    value_numeric=7.2,
+                    unit="10^9/L",
+                    status="unverified",
+                ),
+                LabResult(
+                    test_name_original="Hemoglobin",
+                    value_numeric=13.1,
+                    unit="g/dL",
+                    status="unverified",
+                ),
+            ]
+            other_report.results = [
+                LabResult(
+                    test_name_original="Private result",
+                    value_numeric=1,
+                    status="unverified",
+                )
+            ]
+            database.add_all([owner, other_user])
+            database.commit()
+
+            results = load_report_results(
+                database,
+                user_id=owner_id,
+                session_id=session_id,
+                report_id=report_id,
+            )
+            assert [result.test_name_original for result in results] == [
+                "Hemoglobin",
+                "White blood cell count",
+            ]
+            assert load_report_results(
+                database,
+                user_id=other_user_id,
+                session_id=session_id,
+                report_id=report_id,
+            ) == []
+            assert load_report_results(
+                database,
+                user_id=owner_id,
+                session_id=other_session_id,
+                report_id=report_id,
+            ) == []
+            assert load_report_results(
+                database,
+                user_id=owner_id,
+                session_id=session_id,
+                report_id=other_report_id,
+            ) == []
 
             database.delete(owner)
             database.delete(other_user)
