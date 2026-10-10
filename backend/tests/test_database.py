@@ -11,7 +11,7 @@ from app.db import models  # noqa: F401
 from app.db.base import Base
 from app.db.database import create_database_engine
 from app.db.models import ChatMessage, ChatSession, LabResult, Report, User
-from app.db.queries import load_message_page, load_recent_messages
+from app.db.queries import add_session_message, load_message_page, load_recent_messages
 
 
 def test_database_persists_messages_and_cascades_user_deletion() -> None:
@@ -261,6 +261,65 @@ def test_message_pages_are_stable_and_owner_scoped() -> None:
                 )
 
             database.delete(owner)
+            database.commit()
+    finally:
+        engine.dispose()
+
+
+def test_adding_message_updates_owned_session_activity() -> None:
+    database_url = os.environ.get("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("set TEST_DATABASE_URL to a disposable PostgreSQL test database")
+
+    engine = create_database_engine(database_url)
+    owner_id = uuid.uuid4()
+    other_user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    old_updated_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+    try:
+        Base.metadata.create_all(engine)
+        with Session(engine) as database:
+            owner = User(id=owner_id)
+            other_user = User(id=other_user_id)
+            chat_session = ChatSession(
+                id=session_id, user=owner, updated_at=old_updated_at
+            )
+            database.add_all([owner, other_user])
+            database.commit()
+
+            assert add_session_message(
+                database,
+                user_id=other_user_id,
+                session_id=session_id,
+                role="user",
+                content="not authorized",
+            ) is None
+            database.commit()
+
+            message = add_session_message(
+                database,
+                user_id=owner_id,
+                session_id=session_id,
+                role="user",
+                content="synthetic message",
+            )
+            assert message is not None
+            database.commit()
+
+            updated_at = database.scalar(
+                select(ChatSession.updated_at).where(ChatSession.id == session_id)
+            )
+            assert updated_at is not None
+            assert updated_at > old_updated_at
+            assert database.scalar(
+                select(func.count())
+                .select_from(ChatMessage)
+                .where(ChatMessage.session_id == session_id)
+            ) == 1
+
+            database.delete(owner)
+            database.delete(other_user)
             database.commit()
     finally:
         engine.dispose()

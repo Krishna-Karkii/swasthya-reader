@@ -1,13 +1,36 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.db.models import ChatMessage, ChatSession
 
 MAX_RECENT_MESSAGE_WINDOW = 20
 MAX_MESSAGE_PAGE_SIZE = 50
+
+
+def add_session_message(
+    database: Session,
+    *,
+    user_id: UUID,
+    session_id: UUID,
+    role: str,
+    content: str,
+) -> ChatMessage | None:
+    owned_session_id = database.scalar(
+        update(ChatSession)
+        .where(ChatSession.id == session_id, ChatSession.user_id == user_id)
+        .values(updated_at=func.now())
+        .returning(ChatSession.id)
+    )
+    if owned_session_id is None:
+        return None
+
+    message = ChatMessage(session_id=session_id, role=role, content=content)
+    database.add(message)
+    database.flush()
+    return message
 
 
 def load_recent_messages(
