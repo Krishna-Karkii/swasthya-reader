@@ -4,10 +4,11 @@ from uuid import UUID
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models import ChatMessage, ChatSession
+from app.db.models import ChatMessage, ChatSession, Report
 
 MAX_RECENT_MESSAGE_WINDOW = 20
 MAX_MESSAGE_PAGE_SIZE = 50
+MAX_REPORT_PAGE_SIZE = 50
 
 
 def load_recent_messages(
@@ -57,3 +58,23 @@ def load_message_page(
 
     statement = statement.order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(limit)
     return list(reversed(database.scalars(statement).all()))
+
+
+def load_session_reports(
+    database: Session,
+    *,
+    user_id: UUID,
+    session_id: UUID,
+    limit: int = 20,
+) -> list[Report]:
+    if not 1 <= limit <= MAX_REPORT_PAGE_SIZE:
+        raise ValueError(f"limit must be between 1 and {MAX_REPORT_PAGE_SIZE}")
+
+    statement = (
+        select(Report)
+        .join(ChatSession, Report.session_id == ChatSession.id)
+        .where(ChatSession.id == session_id, ChatSession.user_id == user_id)
+        .order_by(Report.created_at.desc(), Report.id.desc())
+        .limit(limit)
+    )
+    return list(database.scalars(statement).all())
