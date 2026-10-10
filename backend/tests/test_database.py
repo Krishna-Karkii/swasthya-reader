@@ -11,7 +11,7 @@ from app.db import models  # noqa: F401
 from app.db.base import Base
 from app.db.database import create_database_engine
 from app.db.models import ChatMessage, ChatSession, LabResult, Report, User
-from app.db.queries import load_recent_messages
+from app.db.queries import load_message_page, load_recent_messages
 
 
 def test_database_persists_messages_and_cascades_user_deletion() -> None:
@@ -196,6 +196,71 @@ def test_recent_messages_are_bounded_ordered_and_owner_scoped() -> None:
 
             database.delete(owner)
             database.delete(other_user)
+            database.commit()
+    finally:
+        engine.dispose()
+
+
+def test_message_pages_are_stable_and_owner_scoped() -> None:
+    database_url = os.environ.get("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("set TEST_DATABASE_URL to a disposable PostgreSQL test database")
+
+    engine = create_database_engine(database_url)
+    owner_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    start_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    try:
+        Base.metadata.create_all(engine)
+        with Session(engine) as database:
+            owner = User(id=owner_id)
+            chat_session = ChatSession(id=session_id, user=owner)
+            chat_session.messages = [
+                ChatMessage(
+                    id=uuid.UUID(int=index + 1),
+                    role="user",
+                    content=f"turn {index}",
+                    created_at=start_time + timedelta(minutes=index // 2),
+                )
+                for index in range(5)
+            ]
+            database.add(owner)
+            database.commit()
+
+            newest_page = load_message_page(
+                database, user_id=owner_id, session_id=session_id, limit=2
+            )
+            older_page = load_message_page(
+                database,
+                user_id=owner_id,
+                session_id=session_id,
+                limit=2,
+                before=(newest_page[0].created_at, newest_page[0].id),
+            )
+            oldest_page = load_message_page(
+                database,
+                user_id=owner_id,
+                session_id=session_id,
+                limit=2,
+                before=(older_page[0].created_at, older_page[0].id),
+            )
+
+            all_pages = newest_page + older_page + oldest_page
+            assert [message.content for message in newest_page] == ["turn 3", "turn 4"]
+            assert [message.content for message in older_page] == ["turn 1", "turn 2"]
+            assert [message.content for message in oldest_page] == ["turn 0"]
+            assert len({message.id for message in all_pages}) == 5
+            assert load_message_page(
+                database, user_id=uuid.uuid4(), session_id=session_id
+            ) == []
+
+            with pytest.raises(ValueError, match="limit must be between"):
+                load_message_page(
+                    database, user_id=owner_id, session_id=session_id, limit=51
+                )
+
+            database.delete(owner)
             database.commit()
     finally:
         engine.dispose()
