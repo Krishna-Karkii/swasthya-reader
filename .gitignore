@@ -1,12 +1,16 @@
-.env
-.env.*
-!.env.example
-**/.venv/
+# Python environments and generated files
+.venv/
 venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.DS_Store
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Local uploads and generated media
 uploads/
-reports/
-audio/
+*.mp3
+*.wav
